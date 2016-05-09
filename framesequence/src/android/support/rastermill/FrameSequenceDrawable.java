@@ -31,8 +31,10 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Process;
 import android.os.SystemClock;
+import android.util.Log;
 
 public class FrameSequenceDrawable extends Drawable implements Animatable, Runnable {
+    private static final String TAG = "FrameSequence";
     /**
      * These constants are chosen to imitate common browser behavior for WebP/GIF.
      * If other decoders are added, this behavior should be moved into the WebP/GIF decoders.
@@ -41,6 +43,11 @@ public class FrameSequenceDrawable extends Drawable implements Animatable, Runna
      */
     private static final long MIN_DELAY_MS = 20;
     private static final long DEFAULT_DELAY_MS = 100;
+
+    private static final long EXCEPTION_RETRY_MS = 500;
+
+    private static final int EXCEPTION_LOG_COUNT_MAX = 20;
+    private static int sExceptionLogCount;
 
     private static final Object sLock = new Object();
     private static HandlerThread sDecodingThread;
@@ -174,7 +181,19 @@ public class FrameSequenceDrawable extends Drawable implements Animatable, Runna
                 mState = STATE_DECODING;
             }
             int lastFrame = nextFrame - 2;
-            long invalidateTimeMs = mFrameSequenceState.getFrame(nextFrame, bitmap, lastFrame);
+            long invalidateTimeMs;
+            try {
+                invalidateTimeMs = mFrameSequenceState.getFrame(nextFrame, bitmap, lastFrame);
+            } catch(Exception e) {
+                // Exception during decode, so post a retry. If failed to lock bitmap, this will
+                // likely workaround it. If not, this runnable will only do trivial work until the
+                // object is destroyed.
+                if (sExceptionLogCount++ < EXCEPTION_LOG_COUNT_MAX) {
+                    Log.d(TAG, "exception during decode, rescheduling: " + e);
+                }
+                sDecodingThreadHandler.postDelayed(mDecodeRunnable, EXCEPTION_RETRY_MS);
+                return;
+            }
 
             if (invalidateTimeMs < MIN_DELAY_MS) {
                 invalidateTimeMs = DEFAULT_DELAY_MS;
